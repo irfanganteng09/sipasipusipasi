@@ -36,7 +36,7 @@ async def main():
             try:
                 response = requests.get(LINK_URL)
                 # domain_list = response.text.splitlines()
-                domain_list = response.json()
+                domain_list = response.text.splitlines()
             except Exception as e:
                 print("Error", str(e))
                 domain_list = []
