@@ -1,71 +1,74 @@
 from datetime import datetime
-import requests
 import aiohttp
 import asyncio
-import time
 import hashlib
+import time
+import os
 
-PANEL_URL = "https://greyhal.com"
-PANEL_SALT="dskvjmf39svcm"
-CHECK_INTERVAL = 60 * 5
+class NawalaChecker:
+    def __init__(self):
+        self.PANEL_URL = os.environ.get("PANEL_URL", "https://greyhal.com")
+        self.PANEL_SALT = os.environ.get("PANEL_SALT", "dskvjmf39svcm")
+        self.CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", 60 * 5))
 
-async def generate_salt():
-    date = datetime.now().strftime("%Y%m%d")
-    return hashlib.md5(f"{date}{PANEL_SALT}".encode('utf-8')).hexdigest()
-    
-async def send_to_panel(domain):
-    url = f"{PANEL_URL}/api-checker/deactivate-url"
-    salt = await generate_salt()
-    data = {"salt": salt, "domain": domain}
-    response = requests.post(url, data = data)
-    return response.json()
+    def generate_salt(self):
+        date = datetime.now().strftime("%Y%m%d")
+        return hashlib.md5(f"{date}{self.PANEL_SALT}".encode('utf-8')).hexdigest()
 
-async def check_url(session, url):
-    if url != False:
+    async def send_to_panel(self, domain, remark):
+        url = f"{self.PANEL_URL}/api-checker/deactivate-url"
+        salt = self.generate_salt()
+        data = {"salt": salt, "domain": domain, "remark": remark}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=data) as response:
+                response_data = await response.json()
+                return response_data
+
+    async def check_url(self, session, url):
         try:
-            async with session.get(url) as response:
+            async with session.get(url, allow_redirects=True) as response:
                 result = await response.text()
-                if any(text in result for text in ["This site can’t be reached", "Situs ini tidak dapat dijangkau", "SITUS DIBLOKIR"]):
+                nawala_params = ["This site can’t be reached", "Situs ini tidak dapat dijangkau", "SITUS DIBLOKIR", "trustpositif"]
+                if any(text in result for text in nawala_params):
                     raise ValueError("Nawala")
         except Exception as e:
-            error_msg = f"{url} \n{str(e)}\n"
+            error_msg = f"Error : {url}\n{str(e)}\n"
             print(error_msg)
-            await send_to_panel(url)
+            await self.send_to_panel(url, str(e))
+
+    async def run_check(self):
+        while True:
+            try:
+                print("Start checking...")
+                start_time = time.time()
+                get_list_domain = f"{self.PANEL_URL}/api-checker/get-list-url"
+                salt = self.generate_salt()
+                data = {"salt": salt}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(get_list_domain, data=data) as response:
+                        data = await response.json()
+                        domain_list = data.get('data')
+                    
+                    tasks = [self.check_url(session, url) for url in domain_list]
+                    await asyncio.gather(*tasks)
+                
+                execution_time = time.time() - start_time
+                date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                print(f"Finished in : {execution_time:.2f} seconds | {date}")
+                await asyncio.sleep(self.CHECK_INTERVAL)
+            except Exception as e:
+                print(f"Application crashed: {e}")
+                print("Restarting in 10 seconds...")
+                await asyncio.sleep(10)
 
 async def main():
     while True:
-        start_time = time.time()
-        print('Checking start...')
-        async with aiohttp.ClientSession() as session:
-            try:
-                get_list_domain = f"{PANEL_URL}/api-checker/get-list-url"
-                salt = await generate_salt()
-                data = {"salt": salt}
-                response = requests.post(get_list_domain, data = data)
-                
-                list = response.json()
-                domain_list = list.get('data')
-            except Exception as e:
-                print("Error", str(e))
-                domain_list = []
+        try:
+            nawala_checker = NawalaChecker()
+            await nawala_checker.run_check()
+        except Exception as e:
+            pass
 
-            tasks = []
-            for domain in domain_list:
-                domain = domain.strip()
-                if domain.startswith("http://") or domain.startswith("https://"):
-                    url = domain
-                elif '=' not in domain and len(domain) != 0 :
-                    url = "https://" + domain
-                else:
-                    continue
-                
-                tasks.append(asyncio.ensure_future(check_url(session, url)))
-
-            await asyncio.gather(*tasks)
-            
-        print('Finished...')
-        execution_time = "--- %s seconds ---" % (time.time() - start_time)
-        print(execution_time)
-        time.sleep(CHECK_INTERVAL)
-
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
